@@ -9,8 +9,7 @@ with open("can.jpg", 'rb') as file:
     image = file.read()
 
 body = {
-    "image": b64encode(image).decode(),
-    "box": [883, 749, 2000, 3100]
+    "image": b64encode(image).decode()
 }
 
 URL = "http://[::]:80"
