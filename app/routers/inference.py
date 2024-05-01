@@ -1,52 +1,82 @@
 import base64
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from base64 import b64decode, b64encode
-import json
-from segment_anything import SamPredictor
 import numpy as np
-import io
+import torch
 import cv2
 from ..schemas import SegmentBody
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 router = APIRouter()
 
 @router.post("/segment")
 def segment_image(request: Request, body: SegmentBody):
-    image = b64decode(body.image.encode())
-
-    file_bytes = np.fromstring(image, np.uint8)    
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
+    # Decode the image from base64
+    image_data = b64decode(body.image.encode())
+    image_array = np.frombuffer(image_data, np.uint8)
+    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
     try:
-        predictor = SamPredictor(request.app.state.ml_models["sam"])
-        predictor.set_image(image)
+        model_path = "/code/sam_images/sam_vit_l_0b3195.pth"
+        model_type = "vit_l"
+        device = "cpu"
 
-        input_box = np.array(body.box) if body.box else None
-        input_points = np.array(body.input_points) if body.input_points else None
-        input_labels = np.array(body.input_labels) if body.input_labels else None
-        multimask_output=bool(body.multimask_output)
+        sam = sam_model_registry[model_type](checkpoint=model_path)
+        sam.to(device=device)
 
-        masks, _, _ = predictor.predict(
-            box=input_box,
-            point_coords=input_points,
-            point_labels=input_labels,
-            multimask_output=multimask_output
+        mask_generator = SamAutomaticMaskGenerator(sam)
+        masks = mask_generator.generate(image)
+
+        results = []
+        for ann in masks:
+            mask = ann['segmentation']
+            success, mask_encoded = cv2.imencode('.png', mask * 255)
+            if success:
+                mask_base64 = base64.b64encode(mask_encoded).decode('utf-8')  
+                results.append({
+                    "segmentation": mask_base64,
+                    "area": ann['area'],
+                    "bbox": ann['bbox'],
+                    "predicted_iou": ann['predicted_iou'],
+                    "point_coords": ann['point_coords'],
+                    "stability_score": ann['stability_score'],
+                    "crop_box": ann['crop_box']
+                })
+
+        mask_generator_2 = SamAutomaticMaskGenerator(
+            model=sam,
+            points_per_side=32,
+            pred_iou_thresh=0.86,
+            stability_score_thresh=0.92,
+            crop_n_layers=1,
+            crop_n_points_downscale_factor=2,
+            min_mask_region_area=100
         )
-    except Exception as ex:
-        return {
-            "detail": str(ex)
+
+        masks2 = mask_generator_2.generate(image)
+        results2 = []
+        for ann in masks2:
+            mask = ann['segmentation']
+            success, mask_encoded = cv2.imencode('.png', mask * 255)
+            if success:
+                mask_base64 = base64.b64encode(mask_encoded).decode('utf-8')  
+                results2.append({
+                    "segmentation": mask_base64,
+                    "area": ann['area'],
+                    "bbox": ann['bbox'],
+                    "predicted_iou": ann['predicted_iou'],
+                    "point_coords": ann['point_coords'],
+                    "stability_score": ann['stability_score'],
+                    "crop_box": ann['crop_box']
+                })
+
+        meta_results = {
+            'vit_l_basic': results,
+            'vit_l_advanced': results2
         }
 
-    single_mask = np.repeat(masks[0][:, :, np.newaxis], 3, axis=2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    tobyte = lambda t: 255 if t else 0
-    vfunc = np.vectorize(tobyte)
-
-    mask_image_vect = vfunc(single_mask)
-    
-    is_success, buffer = cv2.imencode(".png", mask_image_vect)
-    return {
-        "encoded_binary_mask": b64encode(buffer).decode()
-    }
+    return meta_results
