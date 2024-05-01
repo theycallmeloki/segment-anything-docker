@@ -22,7 +22,7 @@ res = r.json()
 
 print(res)
 
-f = b64decode(res["encoded_binary_mask"])
+#f = b64decode(res["encoded_binary_mask"])
 
-with open("response.png", 'wb') as file:
-    file.write(f)
+#with open("response.png", 'wb') as file:
+#    file.write(f)
